@@ -59,6 +59,16 @@ services:
     networks:
       - inception
 
+  redis:
+    image: redis:1.0
+    build:
+      context: ./requirements/bonus/redis
+      dockerfile: Dockerfile
+    container_name: redis
+    restart: always
+    networks:
+      - inception
+
 volumes:
   mariadb_data:
     driver: local
