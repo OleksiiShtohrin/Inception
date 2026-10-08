@@ -304,12 +304,27 @@ make clean
 
 removes the containers and Docker volumes.
 
-This also removes the persistent application data stored in those volumes.
+The persistent data stored under:
 
-Therefore:
+```text
+/home/oshtohri/data/mariadb
+/home/oshtohri/data/wordpress
+```
 
-> **Do not use `make clean` if you need to preserve the WordPress website
-> and database.**
+is preserved.
+
+To perform a complete reset of the project data, use:
+
+```bash
+make fclean
+```
+
+This removes the Docker volumes and deletes the contents of the persistent
+data directories.
+
+**Use `make fclean` carefully because it permanently removes the project
+data.**
+
 
 ---
 
@@ -399,6 +414,7 @@ The three project containers should be connected to the same Docker network.
 | `make down` | Stop and remove containers |
 | `make re` | Rebuild and restart the infrastructure |
 | `make clean` | Remove containers and persistent Docker volumes |
+| `make fclean` | Remove containers, volumes, and all persistent project data |
 
 ---
 

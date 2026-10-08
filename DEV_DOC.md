@@ -72,6 +72,7 @@ Inception/
 │
 └── srcs/
     ├── .env
+    ├── .env.example
     ├── docker-compose.yml
     │
     └── requirements/
@@ -127,7 +128,12 @@ WP_USER=student
 WP_USER_EMAIL=student@example.com
 
 MYSQL_HOST=mariadb
+MYSQL_PORT=3306
 ```
+
+`MYSQL_PORT` defines the internal MariaDB port used by WordPress.
+The default value is `3306`, but the port can be changed through `.env`
+without manually editing `wp-config.php`.
 
 The `.env` file is not committed to Git.
 
@@ -572,9 +578,22 @@ The command:
 make clean
 ```
 
-is different because it removes the Docker volumes.
+removes the Docker named volumes but preserves the persistent data stored
+under:
 
-Therefore it can remove the persistent application data.
+```text
+/home/oshtohri/data/mariadb
+/home/oshtohri/data/wordpress
+```
+
+To completely remove the project data, use:
+
+```bash
+make fclean
+```
+
+This removes the Docker volumes and deletes the contents of the persistent
+data directories.
 
 ---
 
@@ -641,6 +660,18 @@ Stops the project and removes Docker volumes.
 ```bash
 make clean
 ```
+
+### `make fclean`
+
+Stops the project, removes Docker volumes, and deletes the contents of the
+persistent data directories.
+
+```bash
+make fclean
+```
+
+This is a destructive operation and should only be used when a complete
+reset of the project data is intended.
 
 ---
 
