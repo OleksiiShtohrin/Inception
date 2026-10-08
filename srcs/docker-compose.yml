@@ -28,6 +28,7 @@ services:
     restart: always
     environment:
       MYSQL_HOST: ${MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT}
       DOMAIN_NAME: ${DOMAIN_NAME}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}

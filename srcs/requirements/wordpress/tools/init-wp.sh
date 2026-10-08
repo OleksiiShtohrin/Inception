@@ -30,7 +30,7 @@ if [ ! -f "$WP_DIR/wp-config.php" ]; then
         --dbname="$MYSQL_DATABASE" \
         --dbuser="$MYSQL_USER" \
         --dbpass="$DB_PASSWORD" \
-        --dbhost="$MYSQL_HOST:3306" \
+        --dbhost="$MYSQL_HOST:$MYSQL_PORT" \
         --allow-root
 
     chown www-data:www-data "$WP_DIR/wp-config.php"
@@ -39,6 +39,15 @@ if [ ! -f "$WP_DIR/wp-config.php" ]; then
 else
     echo "wp-config.php already exists."
 fi
+
+echo "Configuring database host..."
+
+wp config set DB_HOST "$MYSQL_HOST:$MYSQL_PORT" \
+    --path="$WP_DIR" \
+    --type=constant \
+    --allow-root
+
+echo "Database host configured: $MYSQL_HOST:$MYSQL_PORT"
 
 echo "Checking MariaDB connection..."
 
