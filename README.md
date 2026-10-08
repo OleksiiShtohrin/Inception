@@ -115,6 +115,7 @@ Inception/
 │
 └── srcs/
     ├── .env
+    ├── .env.example
     ├── docker-compose.yml
     │
     └── requirements/
@@ -142,8 +143,10 @@ Inception/
 
 The `secrets/` directory contains local credentials and is excluded from Git.
 
-The `srcs/.env` file contains non-sensitive configuration values and is also
-excluded from Git.
+The `srcs/.env` file contains non-sensitive configuration values and is also excluded from Git.
+
+The `srcs/.env.example` file provides a template for the required
+non-sensitive environment variables and does not contain passwords.
 
 ---
 
@@ -299,6 +302,7 @@ DOMAIN_NAME
 MYSQL_DATABASE
 MYSQL_USER
 MYSQL_HOST
+MYSQL_PORT
 WP_ADMIN_USER
 ```
 
@@ -531,9 +535,14 @@ WP_USER=student
 WP_USER_EMAIL=student@example.com
 
 MYSQL_HOST=mariadb
+MYSQL_PORT=3306
 ```
 
 Passwords must not be placed in this file.
+
+`MYSQL_PORT` defines the internal MariaDB port used by WordPress. The
+default value is `3306`, but the port can be changed through `.env` without
+manually editing `wp-config.php`.
 
 ---
 
@@ -663,8 +672,22 @@ docker compose -f srcs/docker-compose.yml down -v
 
 This removes the Docker volumes as well.
 
-**Use this command carefully because removing the volumes removes the
-persistent WordPress and MariaDB data.**
+## Remove all project data
+
+```bash
+make fclean
+```
+
+This performs the clean operation and also removes the contents of the
+persistent data directories:
+
+```text
+/home/oshtohri/data/mariadb
+/home/oshtohri/data/wordpress
+```
+
+This is a destructive operation and should only be used when a complete
+reset of the project data is intended.
 
 ---
 
