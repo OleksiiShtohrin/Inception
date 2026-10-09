@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     tar \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/wordpress \
@@ -32,6 +33,12 @@ RUN curl -fsSL \
     "https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar" \
     -o /usr/local/bin/wp \
     && chmod +x /usr/local/bin/wp
+
+RUN curl -fsSL \
+    "https://downloads.wordpress.org/plugin/redis-cache.3.0.0.zip" \
+    -o /tmp/redis-cache.zip \
+    && unzip /tmp/redis-cache.zip -d /usr/src/wordpress/wp-content/plugins/ \
+    && rm /tmp/redis-cache.zip
 
 COPY conf/www.conf /etc/php/8.2/fpm/pool.d/www.conf
 

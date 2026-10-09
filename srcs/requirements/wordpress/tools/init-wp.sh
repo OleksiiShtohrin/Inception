@@ -22,6 +22,18 @@ else
     echo "WordPress files already exist."
 fi
 
+echo "Checking Redis Object Cache plugin..."
+
+if [ ! -d "$WP_DIR/wp-content/plugins/redis-cache" ]; then
+    cp -a "$WP_SOURCE/wp-content/plugins/redis-cache" \
+        "$WP_DIR/wp-content/plugins/"
+fi
+
+chown -R www-data:www-data \
+    "$WP_DIR/wp-content/plugins/redis-cache"
+
+echo "Redis Object Cache plugin is ready."
+
 if [ ! -f "$WP_DIR/wp-config.php" ]; then
     echo "Creating wp-config.php..."
 
@@ -48,6 +60,20 @@ wp config set DB_HOST "$MYSQL_HOST:$MYSQL_PORT" \
     --allow-root
 
 echo "Database host configured: $MYSQL_HOST:$MYSQL_PORT"
+
+echo "Configuring Redis..."
+
+wp config set WP_REDIS_HOST redis \
+    --path="$WP_DIR" \
+    --type=constant \
+    --allow-root
+
+wp config set WP_REDIS_PORT 6379 \
+    --path="$WP_DIR" \
+    --type=constant \
+    --allow-root
+
+echo "Redis configuration completed."
 
 echo "Checking MariaDB connection..."
 
@@ -105,6 +131,22 @@ then
 else
     echo "WordPress is already installed."
 fi
+
+echo "Activating Redis Object Cache..."
+
+wp plugin activate redis-cache \
+    --path="$WP_DIR" \
+    --allow-root
+
+echo "Redis Object Cache plugin activated."
+
+echo "Enabling Redis Object Cache..."
+
+wp redis enable \
+    --path="$WP_DIR" \
+    --allow-root
+
+echo "Redis Object Cache enabled."
 
 echo "Starting PHP-FPM..."
 

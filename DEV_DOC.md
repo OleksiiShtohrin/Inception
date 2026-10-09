@@ -165,7 +165,7 @@ secrets/
 These files are excluded from Git:
 
 ```gitignore
-secrets/*.txt
+/secrets/
 ```
 
 Docker Compose makes the secrets available inside the relevant containers
@@ -187,6 +187,29 @@ For example:
 The startup scripts read the required password from these files.
 
 Passwords are therefore not hard-coded into Dockerfiles.
+
+### Generating Secrets
+
+The project provides a script to generate the four required secret files:
+
+```bash
+./scripts/create-secrets.sh
+```
+
+The script creates a secret only if the corresponding file does not already exist. Each generated secret contains 12 hexadecimal characters. The files are assigned permissions `600`, and the `secrets/` directory is assigned permissions `700`.
+
+Existing secret files are preserved when the script is run again. This prevents accidental password changes for an already initialized database.
+
+**Important:** Generate the secrets before the first MariaDB initialization. If MariaDB has already been initialized, changing the secret files does not automatically update the database users' passwords.
+
+For a fresh installation, prepare the environment and secrets before starting the services:
+
+```bash
+./scripts/create-secrets.sh
+docker compose -f srcs/docker-compose.yml config -q
+```
+
+The script does not print or display the generated passwords.
 
 ---
 
