@@ -2,22 +2,37 @@
 
 ## 1. Project Overview
 
-Inception is a Docker-based infrastructure project developed as part of the
-42 curriculum.
+Inception is a Docker-based infrastructure project developed as part of the 42 curriculum.
 
-The infrastructure consists of three independent services:
+The infrastructure consists of five independent services:
 
 ```text
-NGINX
-  │
-  │ FastCGI :9000
-  ▼
-WordPress + PHP-FPM
-  │
-  │ MySQL :3306
-  ▼
-MariaDB
+                         NGINX
+                      HTTPS :443
+                            │
+                 ┌──────────┴──────────┐
+                 │                     │
+            FastCGI :9000         FastCGI :9000
+                 │                     │
+                 ▼                     ▼
+          WordPress + PHP-FPM       Adminer
+                 │                     │
+                 └──────────┬──────────┘
+                            │
+                       MySQL :3306
+                            │
+                            ▼
+                         MariaDB
+
+          Redis — WordPress object cache
 ```
+
+The five services are:
+- NGINX — the only service exposed to the host; terminates HTTPS and routes requests to the appropriate application.
+- WordPress + PHP-FPM — serves the WordPress website.
+- MariaDB — stores the WordPress database.
+- Redis — provides object caching for WordPress through the Redis Object Cache plugin.
+- Adminer — provides a web interface for managing MariaDB through NGINX over HTTPS.
 
 Each service runs in its own dedicated Docker container.
 
@@ -67,14 +82,14 @@ Inception/
 ├── scripts/
 │   └── create-secrets.sh
 │
-├── secrets/
+├── secrets/                  # Local files; excluded from Git
 │   ├── db_password.txt
 │   ├── db_root_password.txt
 │   ├── wp_admin_password.txt
 │   └── wp_user_password.txt
 │
 └── srcs/
-    ├── .env
+    ├── .env                  # Local file; excluded from Git
     ├── .env.example
     ├── docker-compose.yml
     │
@@ -93,12 +108,21 @@ Inception/
         │   └── tools/
         │       └── init-nginx.sh
         │
-        └── wordpress/
-            ├── Dockerfile
-            ├── conf/
-            │   └── www.conf
-            └── tools/
-                └── init-wp.sh
+        ├── wordpress/
+        │   ├── Dockerfile
+        │   ├── conf/
+        │   │   └── www.conf
+        │   └── tools/
+        │       └── init-wp.sh
+        │
+        └── bonus/
+            ├── adminer/
+            │   └── Dockerfile
+            │
+            └── redis/
+                ├── Dockerfile
+                └── conf/
+                    └── redis.conf
 ```
 
 The project separates service-specific configuration, Dockerfiles and startup
@@ -134,9 +158,10 @@ MYSQL_HOST=mariadb
 MYSQL_PORT=3306
 ```
 
-`MYSQL_PORT` defines the internal MariaDB port used by WordPress.
-The default value is `3306`, but the port can be changed through `.env`
-without manually editing `wp-config.php`.
+`MYSQL_PORT` defines the MariaDB port used by WordPress when connecting to the database.
+The default value is `3306`. The WordPress initialization script uses
+`MYSQL_HOST` and `MYSQL_PORT` to configure the database connection in
+`wp-config.php`.
 
 The `.env` file is not committed to Git.
 
@@ -224,12 +249,14 @@ The main orchestration file is:
 srcs/docker-compose.yml
 ```
 
-It defines three services:
+It defines five services:
 
 ```text
 mariadb
 wordpress
 nginx
+redis
+adminer
 ```
 
 It also defines:
@@ -238,6 +265,13 @@ It also defines:
 - the MariaDB named volume;
 - the WordPress named volume;
 - Docker Secrets.
+
+Only NGINX publishes a port to the host (`443:443`). WordPress, MariaDB,
+Redis and Adminer communicate through the internal Docker network and do not
+publish ports directly to the host.
+
+Redis provides WordPress object caching. Adminer is accessed through NGINX
+over HTTPS at `https://oshtohri.42.fr/adminer/`.
 
 The services use their own Dockerfiles:
 
@@ -438,7 +472,39 @@ PHP-FPM therefore becomes PID 1 of the WordPress container.
 
 ---
 
-# 10. NGINX Container
+# 10. Redis Container
+
+The Redis service is built from:
+
+```text
+srcs/requirements/bonus/redis/Dockerfile
+```
+
+Redis is installed on a Debian 12 base image.
+
+The Redis configuration file is:
+
+```text
+srcs/requirements/bonus/redis/conf/redis.conf
+```
+
+The configuration specifies:
+
+- port `6379`;
+- listening on `0.0.0.0`;
+- `protected-mode no`.
+
+Redis provides object caching for WordPress through the Redis Object Cache
+plugin. It is accessible through the internal Docker network and does not
+publish port `6379` to the host.
+
+Because Redis is configured with `protected-mode no`, its security depends
+on network isolation and ensuring that the Redis port is not exposed outside
+the Docker network.
+
+---
+
+# 11. NGINX Container
 
 The NGINX service is built from:
 
@@ -481,7 +547,43 @@ The WordPress volume is mounted read-only in the NGINX container.
 
 ---
 
-# 11. TLS Certificate
+# 12. Adminer Container
+
+The Adminer service is built from:
+
+```text
+srcs/requirements/bonus/adminer/Dockerfile
+```
+
+The Dockerfile uses Debian 12 and installs:
+
+- Adminer;
+- PHP 8.2-FPM;
+- the PHP MySQL extension.
+
+The container copies Adminer's application files to:
+
+```text
+/var/www/adminer/
+```
+
+PHP-FPM listens on the internal port `9000`.
+
+NGINX forwards Adminer PHP requests to the Adminer container and serves its
+static CSS and JavaScript files.
+
+Adminer is accessible through NGINX over HTTPS at:
+
+```text
+https://oshtohri.42.fr/adminer/
+```
+
+Adminer does not publish a port directly to the host. It connects to MariaDB
+through the internal Docker network.
+
+---
+
+# 13. TLS Certificate
 
 The project uses a self-signed TLS certificate for the local development
 environment.
@@ -504,7 +606,7 @@ The certificate is generated only when it does not already exist.
 
 ---
 
-# 12. Docker Network
+# 14. Docker Network
 
 The project uses a dedicated Docker bridge network:
 
@@ -542,7 +644,7 @@ Only NGINX publishes a host port:
 
 ---
 
-# 13. Persistent Volumes
+# 15. Persistent Volumes
 
 The project uses two Docker named volumes:
 
@@ -582,7 +684,7 @@ bind mounts in the service volume definitions.
 
 ---
 
-# 14. Persistence Model
+# 16. Persistence Model
 
 Container lifecycle and application data lifecycle are separated.
 
@@ -623,7 +725,7 @@ data directories.
 
 ---
 
-# 15. Makefile
+# 17. Makefile
 
 The Makefile is located at:
 
@@ -699,9 +801,11 @@ make fclean
 This is a destructive operation and should only be used when a complete
 reset of the project data is intended.
 
+**Warning:** `make fclean` is destructive. It removes Docker volumes and deletes the contents of `/home/oshtohri/data/mariadb` and `/home/oshtohri/data/wordpress`. Do not run it unless you intentionally want to erase the persistent database and WordPress files.
+
 ---
 
-# 16. Container Restart Policy
+# 18. Container Restart Policy
 
 Each service uses:
 
@@ -711,17 +815,19 @@ restart: always
 
 This instructs Docker to restart the container if the main process exits.
 
-The three services therefore have the same restart policy:
+All five services use the same restart policy:
 
 ```text
 mariadb
 wordpress
 nginx
+redis
+adminer
 ```
 
 ---
 
-# 17. PID 1 and Container Processes
+# 19. PID 1 and Container Processes
 
 The project avoids using artificial infinite-loop commands to keep containers
 alive.
@@ -750,7 +856,7 @@ while true
 
 ---
 
-# 18. Build Process
+# 20. Build Process
 
 Build all images:
 
@@ -776,7 +882,7 @@ The `latest` tag is not used.
 
 ---
 
-# 19. Starting the Infrastructure
+# 21. Starting the Infrastructure
 
 The normal development workflow is:
 
@@ -806,7 +912,7 @@ docker compose -f srcs/docker-compose.yml logs
 
 ---
 
-# 20. Configuration Validation
+# 22. Configuration Validation
 
 Before starting the infrastructure, the Compose configuration can be
 validated with:
@@ -826,7 +932,7 @@ This is useful for detecting:
 
 ---
 
-# 21. Debugging
+# 23. Debugging
 
 ## Container status
 
@@ -867,7 +973,7 @@ the container's main process.
 
 ---
 
-# 22. Checking WordPress
+# 24. Checking WordPress
 
 WP-CLI can be used inside the WordPress container.
 
@@ -900,7 +1006,7 @@ docker compose exec wordpress \
 
 ---
 
-# 23. Checking MariaDB
+# 25. Checking MariaDB
 
 Enter the MariaDB container:
 
@@ -930,7 +1036,7 @@ inside the container and persisted through the MariaDB named volume.
 
 ---
 
-# 24. Checking NGINX
+# 26. Checking NGINX
 
 Validate the NGINX configuration:
 
@@ -958,7 +1064,7 @@ curl -k --tlsv1.3 -I https://oshtohri.42.fr
 
 ---
 
-# 25. Checking Volumes
+# 27. Checking Volumes
 
 List volumes:
 
@@ -988,7 +1094,7 @@ directories:
 
 ---
 
-# 26. Checking the Network
+# 28. Checking the Network
 
 List Docker networks:
 
@@ -1008,13 +1114,15 @@ The expected containers are:
 mariadb
 wordpress
 nginx
+redis
+adminer
 ```
 
-All three services must be connected to the same project network.
+All five services must be connected to the same project network.
 
 ---
 
-# 27. Git and Sensitive Files
+# 29. Git and Sensitive Files
 
 Sensitive files must not be committed.
 
@@ -1048,7 +1156,7 @@ Dockerfiles must also never contain passwords.
 
 ---
 
-# 28. Rebuilding After Configuration Changes
+# 30. Rebuilding After Configuration Changes
 
 If a Dockerfile changes:
 
@@ -1072,7 +1180,7 @@ Then rebuild the affected infrastructure.
 
 ---
 
-# 29. Complete Development Workflow
+# 31. Complete Development Workflow
 
 A typical development workflow is:
 
@@ -1110,7 +1218,7 @@ docker compose -f srcs/docker-compose.yml logs
 
 ---
 
-# 30. Important Development Rules
+# 32. Important Development Rules
 
 When modifying the project, preserve the following architecture:
 

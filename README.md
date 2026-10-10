@@ -9,15 +9,15 @@ Inception is a system administration project from the 42 curriculum.
 The goal of this project is to build a small and secure web infrastructure using
 Docker and Docker Compose inside a Virtual Machine.
 
-The infrastructure consists of three independent services:
+The infrastructure consists of five independent services:
 
 - **NGINX** — the only public entry point, providing HTTPS with TLS 1.2/1.3.
-- **WordPress + PHP-FPM** — the application layer responsible for serving the
-  WordPress website.
+- **WordPress + PHP-FPM** — the application layer responsible for serving the WordPress website.
 - **MariaDB** — the database server used by WordPress.
+- **Redis** — an object cache that improves WordPress performance through the Redis Object Cache plugin.
+- **Adminer** — a web-based database management interface accessible through NGINX over HTTPS.
 
-Each service runs in its own dedicated container and is built from its own
-Dockerfile based on Debian.
+Each service runs in its own dedicated container and is built from its own Dockerfile based on Debian 12.
 
 The containers communicate through a dedicated Docker bridge network.
 
@@ -49,8 +49,15 @@ The WordPress administration panel is available at:
 https://oshtohri.42.fr/wp-admin/
 ```
 
-The TLS certificate used by NGINX is self-signed, so a browser may display a
-certificate warning.
+The Adminer database management interface is available at:
+
+```text
+https://oshtohri.42.fr/adminer/
+```
+
+Adminer connects to MariaDB through the internal Docker network. Redis is also accessible only within the Docker network.
+
+The TLS certificate used by NGINX is self-signed, so a browser may display a certificate warning.
 
 ---
 
@@ -59,7 +66,8 @@ certificate warning.
 The infrastructure can be represented as follows:
 
 ```text
-                         HTTPS :443
+
+                         Host :443
                              │
                              ▼
                     ┌─────────────────┐
@@ -67,23 +75,32 @@ The infrastructure can be represented as follows:
                     │   TLS 1.2/1.3   │
                     └────────┬────────┘
                              │
-                      FastCGI :9000
+                ┌────────────┴────────────┐
+                │                         │
+           FastCGI :9000             FastCGI :9000
+                │                         │
+                ▼                         ▼
+       ┌─────────────────┐       ┌─────────────────┐
+       │    WordPress    │       │     Adminer     │
+       │    PHP-FPM      │       │    PHP-FPM      │
+       └────────┬────────┘       └─────────────────┘
+                │                         │
+                └────────────┬────────────┘
                              │
-                             ▼
-                    ┌─────────────────┐
-                    │    WordPress    │
-                    │    PHP-FPM      │
-                    └────────┬────────┘
-                             │
-                         MySQL :3306
+                        MySQL :3306
                              │
                              ▼
                     ┌─────────────────┐
                     │     MariaDB     │
                     └─────────────────┘
 
-                         Docker Network
-                         "inception"
+       ┌─────────────────────────────────────┐
+       │         Docker Network              │
+       │           "inception"               │
+       │                                     │
+       │  Redis — internal object cache      │
+       └─────────────────────────────────────┘
+
 ```
 
 Only NGINX exposes a port to the host:
@@ -92,8 +109,7 @@ Only NGINX exposes a port to the host:
 Host :443 → NGINX :443
 ```
 
-WordPress and MariaDB communicate internally through the Docker network and
-are not exposed directly to the host.
+WordPress, MariaDB, Redis and Adminer communicate through the internal Docker network and are not exposed directly to the host. Adminer is accessed through NGINX over HTTPS.
 
 ---
 
@@ -110,14 +126,14 @@ Inception/
 ├── scripts/
 │   └── create-secrets.sh
 │
-├── secrets/
+├── secrets/                  # Local files; excluded from Git
 │   ├── db_password.txt
 │   ├── db_root_password.txt
 │   ├── wp_admin_password.txt
 │   └── wp_user_password.txt
 │
 └── srcs/
-    ├── .env
+    ├── .env                  # Local file; excluded from Git
     ├── .env.example
     ├── docker-compose.yml
     │
@@ -136,12 +152,21 @@ Inception/
         │   └── tools/
         │       └── init-nginx.sh
         │
-        └── wordpress/
-            ├── Dockerfile
-            ├── conf/
-            │   └── www.conf
-            └── tools/
-                └── init-wp.sh
+        ├── wordpress/
+        │   ├── Dockerfile
+        │   ├── conf/
+        │   │   └── www.conf
+        │   └── tools/
+        │       └── init-wp.sh
+        │
+        └── bonus/
+            ├── adminer/
+            │   └── Dockerfile
+            │
+            └── redis/
+                ├── Dockerfile
+                └── conf/
+                    └── redis.conf
 ```
 
 The `secrets/` directory contains local credentials and is excluded from Git.
@@ -159,7 +184,7 @@ non-sensitive environment variables and does not contain passwords.
 
 Each service has its own Dockerfile.
 
-The project uses Debian 12 as the base image for all three services.
+The project uses Debian 12 as the base image for all five services.
 
 The images are built locally by Docker Compose rather than using ready-made
 service images.
@@ -170,6 +195,8 @@ The resulting images are:
 mariadb:1.0
 wordpress:1.0
 nginx:1.0
+redis:1.0
+adminer:1.0
 ```
 
 The `latest` tag is intentionally not used.
@@ -186,8 +213,10 @@ It:
 - provides HTTPS;
 - allows only TLS 1.2 and TLS 1.3;
 - serves WordPress static files;
-- forwards PHP requests to PHP-FPM;
-- communicates with the WordPress container through the Docker network.
+- forwards WordPress PHP requests to the WordPress PHP-FPM container;
+- routes Adminer PHP requests to the dedicated Adminer PHP-FPM container;
+- serves Adminer static CSS and JavaScript files;
+- communicates with the application containers through the Docker network.
 
 HTTP port 80 is not exposed.
 
@@ -223,10 +252,42 @@ MariaDB runs in its own dedicated container.
 
 It is not exposed directly to the host.
 
-MariaDB listens on the internal Docker network and accepts connections from
-the WordPress container.
+MariaDB listens on the internal Docker network and accepts connections from the WordPress and Adminer containers.
 
 The database is persisted using the MariaDB named volume.
+
+---
+
+## Redis
+
+Redis is used as an object cache for WordPress through the Redis Object Cache
+plugin.
+
+It helps reduce repeated database queries by caching supported WordPress data.
+
+Redis is available only through the internal Docker network and does not
+expose a port to the host.
+
+---
+
+## Adminer
+
+Adminer provides a web-based interface for managing the MariaDB database.
+
+It is accessible through NGINX over HTTPS at:
+
+```text
+https://oshtohri.42.fr/adminer/
+```
+
+Adminer runs in its own container with PHP-FPM. NGINX forwards Adminer PHP
+requests to that container and serves its static CSS and JavaScript files.
+
+Adminer is not exposed directly to the host. It connects to MariaDB through
+the internal Docker network.
+
+Use the MariaDB credentials configured for the project to log in. Do not store
+database passwords in this documentation.
 
 ---
 
