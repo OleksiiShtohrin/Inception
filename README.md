@@ -107,6 +107,9 @@ Inception/
 ├── DEV_DOC.md
 ├── .gitignore
 │
+├── scripts/
+│   └── create-secrets.sh
+│
 ├── secrets/
 │   ├── db_password.txt
 │   ├── db_root_password.txt
