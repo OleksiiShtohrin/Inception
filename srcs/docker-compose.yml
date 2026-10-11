@@ -79,6 +79,33 @@ services:
     networks:
       - inception
 
+  ftp:
+    image: ftp:1.0
+    build:
+      context: ./requirements/bonus/ftp
+      dockerfile: Dockerfile
+    container_name: ftp
+    restart: always
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    secrets:
+      - ftp_password
+    volumes:
+      - wordpress_data:/var/www/html
+    networks:
+      - inception
+
+  static-site:
+    image: static-site:1.0
+    build:
+      context: ./requirements/bonus/static-site
+      dockerfile: Dockerfile
+    container_name: static-site
+    restart: always
+    networks:
+      - inception
+
 volumes:
   mariadb_data:
     driver: local
@@ -110,3 +137,6 @@ secrets:
 
   wp_user_password:
     file: ../secrets/wp_user_password.txt
+
+  ftp_password:
+    file: ../secrets/ftp_password.txt

@@ -25,5 +25,6 @@ create_secret "$SECRETS_DIR/db_password.txt"
 create_secret "$SECRETS_DIR/db_root_password.txt"
 create_secret "$SECRETS_DIR/wp_admin_password.txt"
 create_secret "$SECRETS_DIR/wp_user_password.txt"
+create_secret "$SECRETS_DIR/ftp_password.txt"
 
 echo "Secrets are ready."

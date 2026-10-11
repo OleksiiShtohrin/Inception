@@ -64,7 +64,8 @@ for secret in \
     db_password.txt \
     db_root_password.txt \
     wp_admin_password.txt \
-    wp_user_password.txt
+    wp_user_password.txt \
+    ftp_password.txt
 do
     file="$SECRETS_DIR/$secret"
 
