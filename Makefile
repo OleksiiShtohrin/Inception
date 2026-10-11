@@ -1,17 +1,23 @@
+
 COMPOSE = docker compose -f srcs/docker-compose.yml
 DATA_DIR = /home/$(USER)/data
 
-all: prepare
+.PHONY: all check-config prepare build up down clean fclean re
+
+all: check-config prepare
 	$(COMPOSE) up -d --build
+
+check-config:
+	@./scripts/check-config.sh
 
 prepare:
 	@mkdir -p $(DATA_DIR)/mariadb
 	@mkdir -p $(DATA_DIR)/wordpress
 
-build: prepare
+build: check-config prepare
 	$(COMPOSE) build
 
-up: prepare
+up: check-config prepare
 	$(COMPOSE) up -d
 
 down:
@@ -25,6 +31,6 @@ fclean:
 	sudo find $(DATA_DIR)/mariadb -mindepth 1 -delete
 	sudo find $(DATA_DIR)/wordpress -mindepth 1 -delete
 
-re: prepare
+re: check-config prepare
 	$(COMPOSE) down
 	$(COMPOSE) up -d --build
