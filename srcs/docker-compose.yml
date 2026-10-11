@@ -106,6 +106,25 @@ services:
     networks:
       - inception
 
+  backup:
+    image: backup:1.0
+    build:
+      context: ./requirements/bonus/backup
+      dockerfile: Dockerfile
+    container_name: backup
+    restart: "no"
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+    secrets:
+      - db_password
+    volumes:
+      - /home/oshtohri/data/backups:/backups
+    networks:
+      - inception
+
 volumes:
   mariadb_data:
     driver: local

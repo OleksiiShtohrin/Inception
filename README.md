@@ -9,24 +9,27 @@ Inception is a system administration project from the 42 curriculum.
 The goal of this project is to build a small and secure web infrastructure using
 Docker and Docker Compose inside a Virtual Machine.
 
-The infrastructure consists of five independent services:
+The infrastructure consists of seven long-running services and one on-demand backup job:
 
-- **NGINX** — the only public entry point, providing HTTPS with TLS 1.2/1.3.
+- **NGINX** — the public HTTPS entry point, providing TLS 1.2/1.3 and routing requests to the application and static website.
 - **WordPress + PHP-FPM** — the application layer responsible for serving the WordPress website.
 - **MariaDB** — the database server used by WordPress.
 - **Redis** — an object cache that improves WordPress performance through the Redis Object Cache plugin.
 - **Adminer** — a web-based database management interface accessible through NGINX over HTTPS.
+- **FTP** — a file transfer service that allows authenticated access to the shared WordPress files.
+- **Static Website** — a separate NGINX container serving static HTML and CSS files through the main NGINX reverse proxy.
+- **Backup** — an on-demand job that creates SQL dumps of the MariaDB database and stores them in a host directory.
 
-Each service runs in its own dedicated container and is built from its own Dockerfile based on Debian 12.
+Each long-running service runs in its own container. The images are built from service-specific Dockerfiles based on Debian 12.
 
 The containers communicate through a dedicated Docker bridge network.
 
-Persistent data is stored using two Docker named volumes:
+Persistent application data is stored using two Docker named volumes:
 
 - a volume for the MariaDB database;
 - a volume for the WordPress website files.
 
-The persistent data is stored on the host under:
+The volumes use host directories under:
 
 ```text
 /home/oshtohri/data/
@@ -34,8 +37,13 @@ The persistent data is stored on the host under:
 └── wordpress/
 ```
 
-The project uses Docker Secrets for passwords and a `.env` file for
-non-sensitive configuration values.
+Database backups are stored separately on the host under:
+
+```text
+/home/oshtohri/data/backups/
+```
+
+The project uses Docker Secrets for passwords and a `.env` file for non-sensitive configuration values.
 
 The website is available through:
 
@@ -55,7 +63,15 @@ The Adminer database management interface is available at:
 https://oshtohri.42.fr/adminer/
 ```
 
-Adminer connects to MariaDB through the internal Docker network. Redis is also accessible only within the Docker network.
+The static website is available through:
+
+```text
+https://oshtohri.42.fr/static/
+```
+
+FTP is accessible through the host's FTP ports and uses the shared WordPress files directory. Adminer, Redis, and the static website are accessible internally through the Docker network rather than through separately published host ports.
+
+The backup job runs on demand and is not scheduled automatically.
 
 The TLS certificate used by NGINX is self-signed, so a browser may display a certificate warning.
 
@@ -66,50 +82,61 @@ The TLS certificate used by NGINX is self-signed, so a browser may display a cer
 The infrastructure can be represented as follows:
 
 ```text
+                         HOST MACHINE
+                 ┌──────────────────────────┐
+                 │ HTTPS :443               │
+                 │ FTP :21, :21100-21110    │
+                 └────────────┬─────────────┘
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │      NGINX      │
+                     │   TLS 1.2/1.3   │
+                     └────────┬────────┘
+                              │
+                ┌─────────────┼─────────────┐
+                │             │             │
+                ▼             ▼             ▼
+          WordPress        Adminer     Static Website
+          PHP-FPM          PHP-FPM     NGINX :80
+                │             │             │
+                └──────┬──────┘             │
+                       │              /static/ proxy
+                       ▼                    │
+                  ┌─────────┐               │
+                  │ MariaDB │               │
+                  │  :3306  │               │
+                  └─────────┘               │
+                                            │
+                 ┌──────────────────────────┘
+                 │
+                 ▼
+          ┌──────────────┐
+          │     FTP      │
+          │  vsftpd :21  │
+          └──────┬───────┘
+                 │
+                 ▼
+          Shared WordPress files
+          (wordpress_data volume)
 
-                         Host :443
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │      NGINX      │
-                    │   TLS 1.2/1.3   │
-                    └────────┬────────┘
-                             │
-                ┌────────────┴────────────┐
-                │                         │
-           FastCGI :9000             FastCGI :9000
-                │                         │
-                ▼                         ▼
-       ┌─────────────────┐       ┌─────────────────┐
-       │    WordPress    │       │     Adminer     │
-       │    PHP-FPM      │       │    PHP-FPM      │
-       └────────┬────────┘       └─────────────────┘
-                │                         │
-                └────────────┬────────────┘
-                             │
-                        MySQL :3306
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │     MariaDB     │
-                    └─────────────────┘
+          ┌─────────────────────────────┐
+          │       Docker Network        │
+          │         inception           │
+          │                             │
+          │ Redis — object cache        │
+          │ Backup — on-demand job      │
+          └─────────────────────────────┘
 
-       ┌─────────────────────────────────────┐
-       │         Docker Network              │
-       │           "inception"               │
-       │                                     │
-       │  Redis — internal object cache      │
-       └─────────────────────────────────────┘
-
+          Persistent data:
+          - MariaDB database
+          - WordPress files
+          - SQL backups on the host
 ```
 
-Only NGINX exposes a port to the host:
+The host publishes HTTPS on port 443 and FTP on port 21, with passive FTP ports 21100-21110. The static website, Adminer, Redis, WordPress, and MariaDB do not expose their own ports directly to the host.
 
-```text
-Host :443 → NGINX :443
-```
-
-WordPress, MariaDB, Redis and Adminer communicate through the internal Docker network and are not exposed directly to the host. Adminer is accessed through NGINX over HTTPS.
+WordPress, MariaDB, Redis, Adminer, FTP and the static website are connected to the internal Docker network. Only NGINX and FTP publish ports on the host. Adminer and the static website are accessed through NGINX over HTTPS, while the backup job connects to MariaDB through the internal network.
 
 ---
 
@@ -124,13 +151,15 @@ Inception/
 ├── .gitignore
 │
 ├── scripts/
+│   ├── check-config.sh
 │   └── create-secrets.sh
 │
 ├── secrets/                  # Local files; excluded from Git
 │   ├── db_password.txt
 │   ├── db_root_password.txt
 │   ├── wp_admin_password.txt
-│   └── wp_user_password.txt
+│   ├── wp_user_password.txt
+│   └── ftp_password.txt
 │
 └── srcs/
     ├── .env                  # Local file; excluded from Git
@@ -163,10 +192,28 @@ Inception/
             ├── adminer/
             │   └── Dockerfile
             │
-            └── redis/
+            ├── redis/
+            │   ├── Dockerfile
+            │   └── conf/
+            │       └── redis.conf
+            │
+            ├── ftp/
+            │   ├── Dockerfile
+            │   ├── conf/
+            │   │   └── vsftpd.conf
+            │   └── tools/
+            │       └── ftp-entrypoint.sh
+            │
+            ├── static-site/
+            │   ├── Dockerfile
+            │   └── html/
+            │       ├── index.html
+            │       └── style.css
+            │
+            └── backup/
                 ├── Dockerfile
-                └── conf/
-                    └── redis.conf
+                └── tools/
+                    └── backup.sh
 ```
 
 The `secrets/` directory contains local credentials and is excluded from Git.
@@ -182,22 +229,20 @@ non-sensitive environment variables and does not contain passwords.
 
 ## Docker Images
 
-Each service has its own Dockerfile.
+Each service has its own Dockerfile, which defines the packages, configuration files and startup command required by that service.
 
-The project uses Debian 12 as the base image for all five services.
+The project uses Debian 12 as the base image for the custom service images. Each image contains only the software and configuration needed for its role.
 
-The images are built locally by Docker Compose rather than using ready-made
-service images.
+The project builds the following custom images:
 
-The resulting images are:
-
-```text
-mariadb:1.0
-wordpress:1.0
-nginx:1.0
-redis:1.0
-adminer:1.0
-```
+- **mariadb:1.0** — MariaDB database server.
+- **wordpress:1.0** — WordPress application with PHP-FPM.
+- **nginx:1.0** — HTTPS reverse proxy and web server.
+- **redis:1.0** — Redis object cache.
+- **adminer:1.0** — database management interface.
+- **ftp:1.0** — FTP server using vsftpd.
+- **static-site:1.0** — NGINX server for static HTML and CSS.
+- **backup:1.0** — on-demand database backup job using `mariadb-client`.
 
 The `latest` tag is intentionally not used.
 
@@ -205,7 +250,7 @@ The `latest` tag is intentionally not used.
 
 ## NGINX
 
-NGINX is the only service accessible from outside the Docker infrastructure.
+NGINX is the public entry point for web traffic. It exposes HTTPS on port `443` and routes requests to the appropriate service through the internal Docker network.
 
 It:
 
@@ -216,9 +261,10 @@ It:
 - forwards WordPress PHP requests to the WordPress PHP-FPM container;
 - routes Adminer PHP requests to the dedicated Adminer PHP-FPM container;
 - serves Adminer static CSS and JavaScript files;
+- forwards requests under `/static/` to the static website container;
 - communicates with the application containers through the Docker network.
 
-HTTP port 80 is not exposed.
+HTTP port `80` is not exposed on the host. FTP publishes its own ports separately and does not pass through the NGINX reverse proxy.
 
 ---
 
@@ -258,6 +304,8 @@ The database is persisted using the MariaDB named volume.
 
 ---
 
+# Bonus Services
+
 ## Redis
 
 Redis is used as an object cache for WordPress through the Redis Object Cache
@@ -291,6 +339,67 @@ database passwords in this documentation.
 
 ---
 
+## FTP
+
+The FTP service uses vsftpd to provide authenticated access to the shared WordPress files.
+
+It:
+
+- runs in its own container;
+- uses the `ftp_password` Docker Secret for the FTP user's password;
+- shares the `wordpress_data` volume with WordPress;
+- allows authenticated file transfers;
+- uses port `21` for FTP control connections and ports `21100-21110` for passive data connections.
+
+The FTP service publishes these ports on the host:
+
+```text
+21
+21100-21110
+```
+
+Anonymous FTP access is disabled. The FTP user is restricted to the shared WordPress files directory.
+
+---
+
+## Static Website
+
+The static website runs in its own NGINX container and serves HTML and CSS files.
+
+It is accessible through the main NGINX reverse proxy at:
+
+```text
+https://oshtohri.42.fr/static/
+```
+
+The main NGINX forwards requests under `/static/` to the static website container through the internal Docker network.
+
+The static website does not publish a port directly to the host.
+
+---
+
+## Database Backup
+
+The backup service creates SQL dumps of the MariaDB database using `mariadb-dump`.
+
+To run a backup manually, execute:
+
+```bash
+docker compose -f srcs/docker-compose.yml run --rm backup
+```
+
+The service waits for MariaDB to become available before creating the dump. Backup files are stored on the host in:
+
+```text
+/home/oshtohri/data/backups/
+```
+
+Each backup filename includes a timestamp. The backup service runs on demand and is not scheduled automatically.
+
+The backup job uses the `db_password` Docker Secret to authenticate with MariaDB. Removing the temporary backup container does not remove the SQL files stored on the host.
+
+---
+
 # Persistent Storage
 
 The project uses two Docker named volumes:
@@ -307,12 +416,11 @@ Their persistent data is stored on the host under:
 /home/oshtohri/data/wordpress
 ```
 
-The volumes are declared as Docker named volumes in `docker-compose.yml` and
-configured with Docker's local volume driver so that their data is stored in
-the required host directories.
+The volumes are declared as Docker named volumes in `docker-compose.yml` and configured with Docker's local volume driver so that their data is stored in the required host directories.
 
-This allows containers to be removed and recreated without losing the
-WordPress database or website files.
+This allows containers to be removed and recreated without losing the WordPress database or website files.
+
+For database backup instructions, see the [Database Backup](#database-backup) section above.
 
 ---
 
@@ -380,6 +488,7 @@ This project uses Docker Secrets for passwords:
 /run/secrets/db_root_password
 /run/secrets/wp_admin_password
 /run/secrets/wp_user_password
+/run/secrets/ftp_password
 ```
 
 The initialization scripts read the secrets when the containers start.
@@ -417,7 +526,7 @@ wordpress → mariadb:3306
 nginx     → wordpress:9000
 ```
 
-Only NGINX publishes a port to the host.
+NGINX publishes port `443` for HTTPS. FTP separately publishes port `21` and the passive port range `21100-21110`. The other services do not publish ports directly to the host.
 
 ## Host Network
 
@@ -478,7 +587,9 @@ volumes:
 ```
 
 The Inception subject explicitly forbids bind mounts for the two persistent
-WordPress/MariaDB storages.
+WordPress/MariaDB storages. The backup service uses a bind mount for its
+output directory, `/home/oshtohri/data/backups`, so that SQL backup files
+remain available on the host after the backup container exits.
 
 ### Comparison
 
@@ -499,16 +610,18 @@ volume driver so the persistent data is stored in the required
 
 The project follows several security-related requirements:
 
-- NGINX is the only externally exposed service.
-- Only port `443` is published.
+- NGINX exposes HTTPS on port `443`.
+- FTP publishes port `21` and passive ports `21100-21110` on the host.
+- The other services do not publish ports directly to the host.
 - TLS 1.2 and TLS 1.3 are enabled.
 - Older TLS protocols are disabled.
-- WordPress and MariaDB are accessible only through the Docker network.
+- WordPress, MariaDB, Redis, Adminer and the static website communicate through the internal Docker network.
 - Passwords are stored using Docker Secrets.
 - `.env` is used for non-sensitive configuration.
 - `.env` and secret files are excluded from Git.
 - Passwords are not hard-coded in Dockerfiles.
 - The `latest` Docker tag is not used.
+- Database backups are stored separately from the application volumes in a host directory.
 
 ---
 
@@ -619,6 +732,7 @@ secrets/db_password.txt
 secrets/db_root_password.txt
 secrets/wp_admin_password.txt
 secrets/wp_user_password.txt
+secrets/ftp_password.txt
 ```
 
 Each file contains the corresponding password.
@@ -637,11 +751,11 @@ make
 
 This executes Docker Compose and:
 
-1. builds the three Docker images;
-2. creates the Docker network;
-3. creates the named volumes;
-4. creates the containers;
-5. starts the infrastructure in detached mode.
+1. validates the required configuration and local secrets;
+2. prepares the host directories for MariaDB and WordPress data;
+3. builds the service images;
+4. creates the Docker network and named volumes;
+5. creates and starts the containers in detached mode.
 
 Check the running containers:
 
@@ -655,6 +769,10 @@ Expected services:
 mariadb
 wordpress
 nginx
+redis
+adminer
+ftp
+static-site
 ```
 
 ---
@@ -676,6 +794,27 @@ The WordPress administration panel is available at:
 https://oshtohri.42.fr/wp-admin/
 ```
 
+The Adminer database management interface is available at:
+
+```text
+https://oshtohri.42.fr/adminer/
+```
+
+The static website is available at:
+
+```text
+https://oshtohri.42.fr/static/
+```
+
+FTP connections use the following host ports:
+
+```text
+21
+21100-21110
+```
+
+Use an FTP client with the configured FTP credentials. The FTP service provides access to the shared WordPress files directory.
+
 ---
 
 # Makefile Commands
@@ -683,14 +822,45 @@ https://oshtohri.42.fr/wp-admin/
 ## Start and build
 
 ```bash
+docker compose -f srcs/docker-compose.yml up -d --build
+```
+
+or
+
+```bash
 make
 ```
 
-Equivalent to:
+or
 
 ```bash
-docker compose -f srcs/docker-compose.yml up -d --build
+make
 ```
+
+This target validates the configuration, prepares the host directories, and then runs Docker Compose with `up -d --build`.
+
+## Validate configuration
+
+```bash
+make check-config
+```
+
+Runs `scripts/check-config.sh` to validate the required environment configuration and local Docker Secret files before starting the project.
+
+## Prepare host directories
+
+```bash
+make prepare
+```
+
+Creates the host directories used by the MariaDB and WordPress persistent volumes:
+
+```text
+/home/oshtohri/data/mariadb
+/home/oshtohri/data/wordpress
+```
+
+These directories provide the host paths used by the project's named volumes.
 
 ## Build images
 
@@ -712,6 +882,16 @@ make down
 
 This stops and removes the containers and network without removing the
 persistent named volumes.
+
+## Create a database backup
+
+```bash
+docker compose -f srcs/docker-compose.yml run --rm backup
+```
+
+This runs the backup job once and removes its container after completion.
+The SQL dump is stored in `/home/oshtohri/data/backups/` on the host.
+The backup job is not scheduled automatically.
 
 ## Rebuild the project
 
@@ -736,7 +916,7 @@ docker compose -f srcs/docker-compose.yml down -v
 
 This removes the Docker volumes as well.
 
-## Remove all project data
+## Remove persistent application data
 
 ```bash
 make fclean
@@ -775,6 +955,10 @@ View logs for a specific service:
 docker compose -f srcs/docker-compose.yml logs nginx
 docker compose -f srcs/docker-compose.yml logs wordpress
 docker compose -f srcs/docker-compose.yml logs mariadb
+docker compose -f srcs/docker-compose.yml logs redis
+docker compose -f srcs/docker-compose.yml logs adminer
+docker compose -f srcs/docker-compose.yml logs ftp
+docker compose -f srcs/docker-compose.yml logs static-site
 ```
 
 Follow logs in real time:
@@ -820,7 +1004,7 @@ docker compose -f srcs/docker-compose.yml config
 
 The containers themselves are disposable.
 
-The persistent application data is stored in the named volumes.
+The persistent application data is stored in the named volumes. Database backup files are stored separately in the host directory `/home/oshtohri/data/backups/` using a bind mount.
 
 The host directories are:
 
@@ -860,6 +1044,13 @@ The main processes are:
 - MariaDB → `mariadbd`
 - WordPress → PHP-FPM
 - NGINX → NGINX master process
+- Redis → Redis server
+- Adminer → PHP-FPM
+- FTP → vsftpd
+- Static Website → NGINX master process
+
+The backup container runs the backup script as its main process and exits
+after the backup job finishes.
 
 This follows the container process model required by the project.
 
@@ -880,6 +1071,9 @@ This follows the container process model required by the project.
 
 - Docker networking:
   https://docs.docker.com/engine/network/
+
+- Docker Compose secrets:
+  https://docs.docker.com/compose/how-tos/use-secrets/
 
 - Docker secrets:
   https://docs.docker.com/engine/swarm/secrets/
@@ -904,6 +1098,24 @@ This follows the container process model required by the project.
 
 - OpenSSL documentation:
   https://docs.openssl.org/
+
+- vsftpd documentation:
+  https://security.appspot.com/vsftpd.html
+
+- NGINX reverse proxy documentation:
+  https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/
+
+- MariaDB backup guide (`mariadb-dump`):
+  https://mariadb.com/docs/server/mariadb-quickstart-guides/mariadb-backup-guide
+
+- Docker bind mounts:
+  https://docs.docker.com/engine/storage/bind-mounts/
+
+- Adminer documentation:
+  https://www.adminer.org/
+
+- Redis documentation:
+  https://redis.io/docs/latest/
 
 ## Learning Topics
 
@@ -980,3 +1192,9 @@ Mandatory infrastructure:
 - [x] Makefile
 - [x] Persistent WordPress data
 - [x] Persistent MariaDB data
+- [x] Redis bonus service
+- [x] Adminer bonus service
+- [x] FTP bonus service
+- [x] Static website bonus service
+- [x] Database backup service
+- [x] Manual database backup verified
