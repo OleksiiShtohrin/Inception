@@ -4,41 +4,78 @@
 
 Inception is a Docker-based infrastructure project developed as part of the 42 curriculum.
 
-The infrastructure consists of five independent services:
+The infrastructure consists of seven long-running services and one on-demand backup job:
 
 ```text
-                         NGINX
-                      HTTPS :443
-                            │
-                 ┌──────────┴──────────┐
-                 │                     │
-            FastCGI :9000         FastCGI :9000
-                 │                     │
-                 ▼                     ▼
-          WordPress + PHP-FPM       Adminer
-                 │                     │
-                 └──────────┬──────────┘
-                            │
-                       MySQL :3306
-                            │
-                            ▼
-                         MariaDB
+                         HOST MACHINE
+                 ┌──────────────────────────┐
+                 │ HTTPS :443               │
+                 │ FTP :21, :21100-21110    │
+                 └────────────┬─────────────┘
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │      NGINX      │
+                     │   TLS 1.2/1.3   │
+                     └────────┬────────┘
+                              │
+                ┌─────────────┼─────────────┐
+                │             │             │
+                ▼             ▼             ▼
+          WordPress        Adminer     Static Website
+          PHP-FPM          PHP-FPM     NGINX :80
+                │             │             │
+                └──────┬──────┘             │
+                       │              /static/ proxy
+                       ▼                    │
+                  ┌─────────┐               │
+                  │ MariaDB │               │
+                  │  :3306  │               │
+                  └─────────┘               │
+                                            │
+                 ┌──────────────────────────┘
+                 │
+                 ▼
+          ┌──────────────┐
+          │     FTP      │
+          │  vsftpd :21  │
+          └──────┬───────┘
+                 │
+                 ▼
+          Shared WordPress files
+          (wordpress_data volume)
 
-          Redis — WordPress object cache
+          ┌─────────────────────────────┐
+          │       Docker Network        │
+          │         inception           │
+          │                             │
+          │ Redis — object cache        │
+          │ Backup — on-demand job      │
+          └─────────────────────────────┘
+
+          Persistent data:
+          - MariaDB database
+          - WordPress files
+          - SQL backups on the host
 ```
 
-The five services are:
-- NGINX — the only service exposed to the host; terminates HTTPS and routes requests to the appropriate application.
-- WordPress + PHP-FPM — serves the WordPress website.
-- MariaDB — stores the WordPress database.
-- Redis — provides object caching for WordPress through the Redis Object Cache plugin.
-- Adminer — provides a web interface for managing MariaDB through NGINX over HTTPS.
+The seven long-running services are:
 
-Each service runs in its own dedicated Docker container.
+- **NGINX** — the public HTTPS entry point, terminates TLS and routes requests to the application and static website.
+- **WordPress + PHP-FPM** — serves the WordPress website.
+- **MariaDB** — stores the WordPress database.
+- **Redis** — provides object caching for WordPress through the Redis Object Cache plugin.
+- **Adminer** — provides a web interface for managing MariaDB through NGINX over HTTPS.
+- **FTP** — provides authenticated file transfer access to the shared WordPress files.
+- **Static Website** — serves static HTML and CSS through the main NGINX reverse proxy.
+
+The backup service is a separate on-demand job. It creates SQL dumps of the MariaDB database and stores them in a host directory.
+
+Each long-running service runs in its own dedicated Docker container. The backup container runs only when requested and exits after the job finishes.
 
 The containers communicate through a dedicated Docker bridge network.
 
-Persistent application data is stored using two Docker named volumes.
+Persistent application data is stored using two Docker named volumes: one for MariaDB and one for WordPress files. Database backups are stored separately on the host under `/home/oshtohri/data/backups/`.
 
 ---
 
@@ -80,13 +117,15 @@ Inception/
 ├── .gitignore
 │
 ├── scripts/
+│   ├── check-config.sh
 │   └── create-secrets.sh
 │
 ├── secrets/                  # Local files; excluded from Git
 │   ├── db_password.txt
 │   ├── db_root_password.txt
 │   ├── wp_admin_password.txt
-│   └── wp_user_password.txt
+│   ├── wp_user_password.txt
+│   └── ftp_password.txt
 │
 └── srcs/
     ├── .env                  # Local file; excluded from Git
@@ -119,10 +158,28 @@ Inception/
             ├── adminer/
             │   └── Dockerfile
             │
-            └── redis/
+            ├── redis/
+            │   ├── Dockerfile
+            │   └── conf/
+            │       └── redis.conf
+            │
+            ├── ftp/
+            │   ├── Dockerfile
+            │   ├── conf/
+            │   │   └── vsftpd.conf
+            │   └── tools/
+            │       └── ftp-entrypoint.sh
+            │
+            ├── static-site/
+            │   ├── Dockerfile
+            │   └── html/
+            │       ├── index.html
+            │       └── style.css
+            │
+            └── backup/
                 ├── Dockerfile
-                └── conf/
-                    └── redis.conf
+                └── tools/
+                    └── backup.sh
 ```
 
 The project separates service-specific configuration, Dockerfiles and startup
@@ -168,7 +225,7 @@ The `.env` file is not committed to Git.
 It is excluded through:
 
 ```gitignore
-srcs/.env
+/srcs/.env
 ```
 
 Environment variables are used for configuration because these values are not
@@ -180,14 +237,15 @@ passwords.
 
 Passwords are stored separately from normal configuration.
 
-The project uses the following secret files:
+The project uses five secret files:
 
 ```text
 secrets/
 ├── db_password.txt
 ├── db_root_password.txt
 ├── wp_admin_password.txt
-└── wp_user_password.txt
+├── wp_user_password.txt
+└── ftp_password.txt
 ```
 
 These files are excluded from Git:
@@ -196,29 +254,29 @@ These files are excluded from Git:
 /secrets/
 ```
 
-Docker Compose makes the secrets available inside the relevant containers
-under:
+Docker Compose makes the secrets available inside the relevant containers under:
 
 ```text
 /run/secrets/
 ```
 
-For example:
+The secret names available to containers include:
 
 ```text
 /run/secrets/db_password
 /run/secrets/db_root_password
 /run/secrets/wp_admin_password
 /run/secrets/wp_user_password
+/run/secrets/ftp_password
 ```
 
-The startup scripts read the required password from these files.
+Each service receives only the secrets configured for it in Docker Compose. Startup scripts read the required passwords from these files.
 
-Passwords are therefore not hard-coded into Dockerfiles.
+Passwords are not hard-coded into Dockerfiles.
 
 ### Generating Secrets
 
-The project provides a script to generate the four required secret files:
+The project provides a script to generate the five required secret files:
 
 ```bash
 ./scripts/create-secrets.sh
@@ -226,7 +284,7 @@ The project provides a script to generate the four required secret files:
 
 The script creates a secret only if the corresponding file does not already exist. Each generated secret contains 12 hexadecimal characters. The files are assigned permissions `600`, and the `secrets/` directory is assigned permissions `700`.
 
-Existing secret files are preserved when the script is run again. This prevents accidental password changes for an already initialized database.
+Existing secret files are preserved when the script is run again. This helps prevent accidental password changes for an already initialized database.
 
 **Important:** Generate the secrets before the first MariaDB initialization. If MariaDB has already been initialized, changing the secret files does not automatically update the database users' passwords.
 
@@ -234,6 +292,7 @@ For a fresh installation, prepare the environment and secrets before starting th
 
 ```bash
 ./scripts/create-secrets.sh
+make check-config
 docker compose -f srcs/docker-compose.yml config -q
 ```
 
@@ -249,7 +308,7 @@ The main orchestration file is:
 srcs/docker-compose.yml
 ```
 
-It defines five services:
+It defines seven long-running services:
 
 ```text
 mariadb
@@ -257,23 +316,25 @@ wordpress
 nginx
 redis
 adminer
+ftp
+static-site
 ```
 
-It also defines:
+The `backup` service is defined separately as an on-demand job. It runs when explicitly requested and exits after completing the database dump.
+
+The Compose configuration also defines:
 
 - the Docker network;
 - the MariaDB named volume;
 - the WordPress named volume;
-- Docker Secrets.
+- Docker Secrets;
+- the configuration and port mappings required by each service.
 
-Only NGINX publishes a port to the host (`443:443`). WordPress, MariaDB,
-Redis and Adminer communicate through the internal Docker network and do not
-publish ports directly to the host.
+NGINX publishes HTTPS port `443` to the host. FTP publishes port `21` and the passive port range `21100-21110`. The remaining services do not publish their own ports directly to the host.
 
-Redis provides WordPress object caching. Adminer is accessed through NGINX
-over HTTPS at `https://oshtohri.42.fr/adminer/`.
+WordPress, MariaDB, Redis and Adminer communicate through the Docker network. Adminer is accessed through NGINX over HTTPS at `https://oshtohri.42.fr/adminer/`. The static website is served through the main NGINX reverse proxy at `https://oshtohri.42.fr/static/`. FTP provides separate authenticated access to the shared WordPress files.
 
-The services use their own Dockerfiles:
+The services use their own Dockerfiles. For example:
 
 ```yaml
 build:
@@ -524,7 +585,7 @@ The startup script is:
 srcs/requirements/nginx/tools/init-nginx.sh
 ```
 
-NGINX is configured to listen only on:
+NGINX is configured to listen on HTTPS port:
 
 ```text
 443
@@ -537,13 +598,21 @@ TLSv1.2
 TLSv1.3
 ```
 
-NGINX forwards PHP requests to:
+NGINX forwards PHP requests for the WordPress application to:
 
 ```text
 wordpress:9000
 ```
 
-The WordPress volume is mounted read-only in the NGINX container.
+Adminer is available through the `/adminer/` route and its PHP requests are forwarded to the Adminer container.
+
+The static website is available through the `/static/` route and is proxied to:
+
+```text
+http://static-site/
+```
+
+The WordPress volume is mounted read-only in the NGINX container. FTP provides a separate file-transfer path to the shared WordPress volume.
 
 ---
 
@@ -606,7 +675,213 @@ The certificate is generated only when it does not already exist.
 
 ---
 
-# 14. Docker Network
+# 14. FTP Container
+
+## Overview
+
+The FTP service provides authenticated access to the WordPress files stored in the shared `wordpress_data` volume.
+
+The service is built from Debian 12 and uses `vsftpd` as its FTP server.
+
+## File Structure
+
+- `srcs/requirements/bonus/ftp/Dockerfile` — builds the FTP image.
+- `srcs/requirements/bonus/ftp/conf/vsftpd.conf` — configures the FTP server.
+- `srcs/requirements/bonus/ftp/tools/ftp-entrypoint.sh` — prepares the FTP environment and starts the server.
+
+## Docker Configuration
+
+The service uses the image `ftp:1.0` and the container name `ftp`.
+
+It has the following configuration:
+
+- **Restart policy:** `always`.
+- **Docker network:** `inception`.
+- **Secret:** `ftp_password`.
+- **Shared volume:** `wordpress_data:/var/www/html`.
+
+### Published Ports
+
+| Host port | Container port | Purpose |
+|---|---|---|
+| `21` | `21` | FTP control connection |
+| `21100-21110` | `21100-21110` | Passive-mode data connections |
+
+The Dockerfile's `EXPOSE` instruction documents the container ports. The `ports` section in Docker Compose publishes these ports on the host.
+
+## FTP Server Configuration
+
+The `vsftpd.conf` file configures the server as follows:
+
+- Anonymous access is disabled.
+- Local-user authentication is enabled.
+- File-writing operations are enabled.
+- The local user is restricted to the configured FTP root.
+- The FTP root is `/var/www/html`.
+- Passive mode is enabled, using ports `21100-21110`.
+- `seccomp_sandbox=NO` disables the vsftpd seccomp sandbox.
+
+## Authentication and Entrypoint
+
+The entrypoint script performs these operations:
+
+1. Creates `/var/run/vsftpd/empty` and sets its permissions to `555`.
+2. Checks that `/run/secrets/ftp_password` exists and is not empty. The container exits with an error if the secret is missing or empty.
+3. Creates the `ftpuser` account if it does not already exist, using UID and GID `33`.
+4. Sets the FTP user's password using the Docker secret.
+5. Starts `vsftpd` in the foreground using `exec`.
+
+The FTP password is supplied through the `ftp_password` Docker secret rather than being hardcoded in the Dockerfile.
+
+## Shared WordPress Files
+
+The volume mapping `wordpress_data:/var/www/html` gives the FTP service access to the same persistent files used by WordPress.
+
+This allows authorized FTP operations to modify the website files. Changes made through FTP can therefore affect the running WordPress site.
+
+## Security Considerations
+
+- Anonymous access is disabled.
+- The FTP user is restricted to the configured FTP root.
+- The password is supplied through a Docker secret.
+- `seccomp_sandbox=NO` disables an additional security mechanism in vsftpd.
+- **This configuration does not enable FTP over TLS.** Standard FTP does not encrypt credentials or transferred files, so this service should be used only in a trusted development environment unless additional protection is configured.
+
+---
+
+# 15. Static Website Container
+
+## Overview
+
+The `static-site` service hosts a static website using NGINX inside a Debian 12 container.
+
+It is built independently from the main NGINX service and communicates with other services through the `inception` Docker network.
+
+## File Structure
+
+- `srcs/requirements/bonus/static-site/Dockerfile` — builds the static website image.
+- `srcs/requirements/bonus/static-site/html/` — contains the static website files copied into the image.
+
+## Dockerfile
+
+The Dockerfile performs the following operations:
+
+1. Uses `debian:12` as the base image.
+2. Updates the package lists and installs NGINX without installing recommended packages.
+3. Removes the package-list cache to reduce the resulting image size.
+4. Copies the contents of `html/` to `/var/www/html/` inside the image.
+5. Documents port `80` using the `EXPOSE` instruction.
+6. Starts NGINX in the foreground using `nginx -g "daemon off;"`.
+
+The resulting image is tagged `static-site:1.0`.
+
+## Networking and Reverse Proxy
+
+The container listens on port `80` and joins the `inception` Docker network.
+
+The service does not publish a host port. Instead, the main NGINX service forwards requests to the static website using the internal service address `http://static-site/`.
+
+The website is available through the main HTTPS endpoint:
+
+`https://oshtohri.42.fr/static/`
+
+This architecture allows the static website to be served through the main NGINX entry point without exposing the static-site container directly on a host port.
+
+## Runtime
+
+The container uses `restart: always` in Docker Compose. NGINX runs as the container's main foreground process, allowing Docker to track the service process.
+
+## NGINX Reverse Proxy Configuration
+
+The main NGINX configuration is stored in `srcs/requirements/nginx/conf/nginx.conf`.
+
+The configuration handles the static website through two location blocks:
+
+- `location = /static` returns an HTTP `301` redirect to `/static/`.
+- `location ^~ /static/` forwards requests to `http://static-site/`.
+
+Because the `proxy_pass` URL ends with `/`, NGINX replaces the matched `/static/` prefix with `/` when forwarding the request.
+
+For example, a request for `/static/css/style.css` is forwarded to the static-site container as `/css/style.css`.
+
+The proxy also forwards the original `Host` header and client/request metadata using `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
+
+---
+
+# 16. Backup Container
+
+## Overview
+
+The backup service creates SQL dumps of the configured MariaDB database.
+
+It is designed as an on-demand job rather than a continuously running service. The Docker Compose configuration uses `restart: "no"`, so the container is not automatically restarted after it exits.
+
+## File Structure
+
+- `srcs/requirements/bonus/backup/Dockerfile` — builds the backup image.
+- `srcs/requirements/bonus/backup/tools/backup.sh` — contains the backup procedure.
+
+## Docker Image
+
+The image is based on Debian 12 and installs `mariadb-client`, which provides the client utilities needed to check database availability and create SQL dumps.
+
+The image copies `backup.sh` to `/usr/local/bin/backup.sh`, makes it executable, and configures it as the container entrypoint.
+
+The resulting image is tagged `backup:1.0`.
+
+## Configuration and Authentication
+
+The script requires `MYSQL_DATABASE` and `MYSQL_USER`. If either variable is missing, the script exits with an error.
+
+`MYSQL_HOST` and `MYSQL_PORT` have default values of `mariadb` and `3306`, respectively, when they are unset.
+
+The database password is read from the Docker secret at `/run/secrets/db_password`. The script exits with an error if the secret is missing or empty.
+
+## Backup Procedure
+
+The script performs the following operations:
+
+1. Reads the database connection settings.
+2. Verifies that the password secret exists and is not empty.
+3. Creates the backup directory if necessary.
+4. Generates a timestamp and constructs a filename in the format `<database>_YYYYMMDD_HHMMSS.sql`.
+5. Waits for MariaDB to become available using `mariadb-admin ping`, retrying every two seconds.
+6. Runs `mariadb-dump` with `--single-transaction`, `--routines`, and `--triggers`.
+7. Sets the resulting file permissions to `600` and reports the file path.
+
+If the dump command fails, the script removes the incomplete output file, prints an error message to standard error, and exits with a non-zero status.
+
+The readiness-check loop has no retry limit or timeout.
+
+## Persistent Backup Storage
+
+The host backup directory is `/home/oshtohri/data/backups/`, mounted into the container at `/backups`.
+
+Backup files are stored outside the container's writable layer, allowing them to remain available after the backup container exits or is removed.
+
+The backup directory is separate from the MariaDB and WordPress data directories.
+
+## Running a Backup
+
+Run the backup job manually from the project root:
+
+`docker compose -f srcs/docker-compose.yml run --rm backup`
+
+The `run` command creates a one-off container from the backup service configuration. The `--rm` option removes the container after it exits, while the SQL dump remains in the mounted host backup directory.
+
+The backup service is not configured with an automatic schedule.
+
+## Security and Recovery Considerations
+
+- The database password is supplied through a Docker secret.
+- Successful dump files are created with permissions `600`.
+- Backup files may contain sensitive website and database information and must be protected accordingly.
+- Creating a dump does not by itself prove that it can be restored successfully. Restoration should be tested separately.
+- The backup job does not currently implement a retention policy or automatically delete older successful backups.
+
+---
+
+# 17. Docker Network
 
 The project uses a dedicated Docker bridge network:
 
@@ -636,15 +911,13 @@ network: host
 links:
 ```
 
-Only NGINX publishes a host port:
+NGINX publishes HTTPS port `443` to the host. FTP separately publishes port `21` and the passive port range `21100-21110`.
 
-```text
-443:443
-```
+The remaining services do not publish their ports directly to the host. They communicate through the Docker bridge network using service names and internal ports.
 
 ---
 
-# 15. Persistent Volumes
+# 18. Persistent Volumes
 
 The project uses two Docker named volumes:
 
@@ -682,13 +955,21 @@ their data is stored under:
 The project uses Docker named volumes rather than declaring direct host-path
 bind mounts in the service volume definitions.
 
+Database backups are stored separately from the named volumes in the host directory:
+
+```text id="b91zcp"
+/home/oshtohri/data/backups/
+```
+
+The backup service mounts this directory at `/backups` inside its container. This allows SQL dump files to remain on the host independently of the backup container's lifecycle.
+
 ---
 
-# 16. Persistence Model
+# 19. Persistence Model
 
 Container lifecycle and application data lifecycle are separated.
 
-Removing the containers does not remove the persistent volumes.
+Removing containers does not automatically delete the persistent application data stored in the host directories.
 
 For example:
 
@@ -697,8 +978,7 @@ make down
 make up
 ```
 
-removes and recreates the containers while preserving the database and
-WordPress files.
+removes and recreates the containers while preserving the database and WordPress files.
 
 The command:
 
@@ -706,26 +986,34 @@ The command:
 make clean
 ```
 
-removes the Docker named volumes but preserves the persistent data stored
-under:
+stops and removes the containers and requests removal of the Docker named volumes using `docker compose down -v`.
+
+The project configures these volumes with the local driver and host-directory bind options. With this configuration, the data directories are managed on the host. The exact behavior of volume removal depends on the volume configuration and Docker implementation, so important data should be backed up before cleanup operations.
 
 ```text
 /home/oshtohri/data/mariadb
 /home/oshtohri/data/wordpress
 ```
 
-To completely remove the project data, use:
+To delete the persistent application data, use:
 
 ```bash
 make fclean
 ```
 
-This removes the Docker volumes and deletes the contents of the persistent
-data directories.
+**Warning:** `make fclean` deletes the contents of the MariaDB and WordPress data directories. This can permanently remove the database and WordPress files.
+
+The backup directory is separate:
+
+```text
+/home/oshtohri/data/backups/
+```
+
+The current `make fclean` target does not delete the contents of this backup directory. However, a backup should not be considered valid until its contents and restoration procedure have been verified.
 
 ---
 
-# 17. Makefile
+# 20. Makefile
 
 The Makefile is located at:
 
@@ -740,6 +1028,22 @@ COMPOSE = docker compose -f srcs/docker-compose.yml
 ```
 
 Available targets:
+
+### `make check-config`
+
+Validates the required environment variables and Docker Secrets before the infrastructure is started.
+
+```bash
+make check-config
+```
+
+### `make prepare`
+
+Creates the host directories used for persistent MariaDB and WordPress data.
+
+```bash
+make prepare
+```
 
 ### `make`
 
@@ -759,7 +1063,7 @@ make build
 
 ### `make up`
 
-Starts the existing containers.
+Starts the services in detached mode, creating containers when necessary.
 
 ```bash
 make up
@@ -775,7 +1079,7 @@ make down
 
 ### `make re`
 
-Stops the project and rebuilds the infrastructure.
+Stops the containers and starts the infrastructure again with rebuilt images. Persistent application data is not intentionally deleted by this target.
 
 ```bash
 make re
@@ -805,17 +1109,17 @@ reset of the project data is intended.
 
 ---
 
-# 18. Container Restart Policy
+# 21. Container Restart Policy
 
-Each service uses:
+The seven long-running services use:
 
 ```yaml
 restart: always
 ```
 
-This instructs Docker to restart the container if the main process exits.
+This instructs Docker to restart a container if its main process exits, subject to Docker's restart-policy behavior.
 
-All five services use the same restart policy:
+The long-running services are:
 
 ```text
 mariadb
@@ -823,24 +1127,34 @@ wordpress
 nginx
 redis
 adminer
+ftp
+static-site
 ```
+
+The `backup` service uses `restart: "no"` because it is an on-demand job. It runs when explicitly requested and exits after the backup operation finishes.
 
 ---
 
-# 19. PID 1 and Container Processes
+# 22. PID 1 and Container Processes
 
 The project avoids using artificial infinite-loop commands to keep containers
 alive.
 
 The containers run their actual services as their main processes.
 
-The main processes are:
+The main processes of the long-running containers are:
 
 ```text
-MariaDB   → mariadbd
-WordPress → php-fpm8.2 -F
-NGINX     → nginx -g "daemon off;"
+MariaDB       → mariadbd
+WordPress     → php-fpm8.2 -F
+NGINX         → nginx -g "daemon off;"
+Redis         → redis-server
+Adminer       → php-fpm8.2 -F
+FTP           → vsftpd
+Static Website → nginx -g "daemon off;"
 ```
+
+The backup container runs its backup script and exits after the operation finishes.
 
 This follows the container model where the main application process remains
 the foreground process of the container.
@@ -856,7 +1170,7 @@ while true
 
 ---
 
-# 20. Build Process
+# 23. Build Process
 
 Build all images:
 
@@ -876,13 +1190,18 @@ The project uses explicit image tags:
 mariadb:1.0
 wordpress:1.0
 nginx:1.0
+redis:1.0
+adminer:1.0
+ftp:1.0
+static-site:1.0
+backup:1.0
 ```
 
 The `latest` tag is not used.
 
 ---
 
-# 21. Starting the Infrastructure
+# 24. Starting the Infrastructure
 
 The normal development workflow is:
 
@@ -896,13 +1215,19 @@ Then verify:
 docker compose -f srcs/docker-compose.yml ps
 ```
 
-Expected services:
+Expected long-running services:
 
 ```text
 mariadb
 wordpress
 nginx
+redis
+adminer
+ftp
+static-site
 ```
+
+The `backup` service is not expected to remain running because it is an on-demand job.
 
 Check the logs if necessary:
 
@@ -912,7 +1237,7 @@ docker compose -f srcs/docker-compose.yml logs
 
 ---
 
-# 22. Configuration Validation
+# 25. Configuration Validation
 
 Before starting the infrastructure, the Compose configuration can be
 validated with:
@@ -932,7 +1257,7 @@ This is useful for detecting:
 
 ---
 
-# 23. Debugging
+# 26. Debugging
 
 ## Container status
 
@@ -973,14 +1298,14 @@ the container's main process.
 
 ---
 
-# 24. Checking WordPress
+# 27. Checking WordPress
 
 WP-CLI can be used inside the WordPress container.
 
 List WordPress users:
 
 ```bash
-docker compose exec wordpress \
+docker compose -f srcs/docker-compose.yml exec wordpress \
     wp user list \
     --path=/var/www/html \
     --allow-root
@@ -989,7 +1314,7 @@ docker compose exec wordpress \
 Check the WordPress database:
 
 ```bash
-docker compose exec wordpress \
+docker compose -f srcs/docker-compose.yml exec wordpress \
     wp db check \
     --path=/var/www/html \
     --allow-root
@@ -998,7 +1323,7 @@ docker compose exec wordpress \
 Check whether WordPress is installed:
 
 ```bash
-docker compose exec wordpress \
+docker compose -f srcs/docker-compose.yml exec wordpress \
     wp core is-installed \
     --path=/var/www/html \
     --allow-root
@@ -1006,24 +1331,25 @@ docker compose exec wordpress \
 
 ---
 
-# 25. Checking MariaDB
+# 28. Checking MariaDB
 
 Enter the MariaDB container:
 
 ```bash
-docker compose exec mariadb bash
+docker compose -f srcs/docker-compose.yml exec mariadb bash
 ```
 
-Check the MariaDB process:
+Inside the container, check the running processes:
 
 ```bash
 ps
 ```
 
-or inspect the process directly from the host:
+To inspect the MariaDB container from the host, use:
 
 ```bash
-docker inspect mariadb
+docker compose -f srcs/docker-compose.yml ps mariadb
+docker compose -f srcs/docker-compose.yml logs mariadb
 ```
 
 The database data is stored in:
@@ -1036,12 +1362,12 @@ inside the container and persisted through the MariaDB named volume.
 
 ---
 
-# 26. Checking NGINX
+# 29. Checking NGINX
 
 Validate the NGINX configuration:
 
 ```bash
-docker compose exec nginx nginx -t
+docker compose -f srcs/docker-compose.yml exec nginx nginx -t
 ```
 
 Check the HTTPS endpoint:
@@ -1064,7 +1390,7 @@ curl -k --tlsv1.3 -I https://oshtohri.42.fr
 
 ---
 
-# 27. Checking Volumes
+# 30. Checking Volumes
 
 List volumes:
 
@@ -1094,7 +1420,7 @@ directories:
 
 ---
 
-# 28. Checking the Network
+# 31. Checking the Network
 
 List Docker networks:
 
@@ -1108,7 +1434,7 @@ Inspect the project network:
 docker network inspect srcs_inception
 ```
 
-The expected containers are:
+The expected long-running services are:
 
 ```text
 mariadb
@@ -1116,13 +1442,15 @@ wordpress
 nginx
 redis
 adminer
+ftp
+static-site
 ```
 
-All five services must be connected to the same project network.
+All seven long-running services communicate through the project Docker network. The `backup` container also joins the network when the backup job runs.
 
 ---
 
-# 29. Git and Sensitive Files
+# 32. Git and Sensitive Files
 
 Sensitive files must not be committed.
 
@@ -1132,11 +1460,11 @@ The project uses:
 .gitignore
 ```
 
-with:
+The project uses the following `.gitignore` rules:
 
 ```gitignore
-secrets/*.txt
-srcs/.env
+/secrets/
+/srcs/.env
 ```
 
 Before creating a commit, verify:
@@ -1145,18 +1473,11 @@ Before creating a commit, verify:
 git status
 ```
 
-The following must not appear as tracked files:
-
-```text
-secrets/*.txt
-srcs/.env
-```
-
-Dockerfiles must also never contain passwords.
+The local secrets directory and `srcs/.env` must not be committed. Dockerfiles must never contain passwords or other sensitive credentials.
 
 ---
 
-# 30. Rebuilding After Configuration Changes
+# 33. Rebuilding After Configuration Changes
 
 If a Dockerfile changes:
 
@@ -1173,6 +1494,10 @@ make re
 If the project configuration changes, validate the Compose file first:
 
 ```bash
+make check-config
+```
+
+```bash
 docker compose -f srcs/docker-compose.yml config
 ```
 
@@ -1180,7 +1505,7 @@ Then rebuild the affected infrastructure.
 
 ---
 
-# 31. Complete Development Workflow
+# 34. Complete Development Workflow
 
 A typical development workflow is:
 
@@ -1218,21 +1543,30 @@ docker compose -f srcs/docker-compose.yml logs
 
 ---
 
-# 32. Important Development Rules
+# 35. Important Development Rules
 
 When modifying the project, preserve the following architecture:
 
-- NGINX remains the only public entry point.
-- Only port `443` is exposed.
-- WordPress remains separated from NGINX.
+- NGINX remains the public HTTPS entry point for the web application.
+- HTTPS port `443` is published by NGINX.
+- FTP separately publishes port `21` and passive ports `21100-21110`.
+- WordPress remains separated from NGINX and serves PHP through PHP-FPM.
 - MariaDB remains separated from WordPress.
 - Services communicate through the Docker network.
-- Persistent data remains in Docker named volumes.
+- The static website is served through the main NGINX reverse proxy.
+- FTP provides authenticated access to the shared WordPress files.
+- Redis provides object caching for WordPress.
+- Adminer is accessed through NGINX over HTTPS.
+- The backup service runs on demand and stores SQL dumps under `/home/oshtohri/data/backups/`.
+- Persistent application data remains in the two Docker named volumes.
+- The two persistent volumes must continue storing their data under `/home/oshtohri/data/mariadb` and `/home/oshtohri/data/wordpress`.
 - Passwords remain in Docker Secrets.
 - Non-sensitive configuration remains in `.env`.
 - Passwords must not be placed in Dockerfiles.
 - The `latest` tag must not be introduced.
-- Containers must run their actual services as their main processes.
+- Long-running containers must run their actual services as their main processes.
+- The backup container exits after the backup operation finishes.
 - Infinite-loop keep-alive hacks must not be introduced.
-- The two persistent volumes must continue storing their data under
-  `/home/oshtohri/data`.
+- `make fclean` is destructive and must only be used when intentionally deleting the persistent MariaDB and WordPress data.
+
+

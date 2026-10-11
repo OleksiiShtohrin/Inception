@@ -831,12 +831,6 @@ or
 make
 ```
 
-or
-
-```bash
-make
-```
-
 This target validates the configuration, prepares the host directories, and then runs Docker Compose with `up -d --build`.
 
 ## Validate configuration
