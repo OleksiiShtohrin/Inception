@@ -1,0 +1,93 @@
+
+docker compose -f srcs/docker-compose.yml ps
+
+docker compose -f srcs/docker-compose.yml logs nginx
+
+SSL/TLS
+openssl s_client -connect oshtohri.42.fr:443 -servername oshtohri.42.fr
+
+echo | openssl s_client -connect oshtohri.42.fr:443 -servername oshtohri.42.fr 2>/dev/null | openssl x509 -noout -subject -issuer -dates
+
+WordPress через HTTPS
+curl -I https://oshtohri.42.fr
+
+HTTP
+curl -v --max-time 5 http://oshtohri.42.fr
+
+
+
+- View logs:
+docker compose -f srcs/docker-compose.yml logs
+
+- View logs for a specific service:
+docker compose -f srcs/docker-compose.yml logs nginx
+docker compose -f srcs/docker-compose.yml logs wordpress
+docker compose -f srcs/docker-compose.yml logs mariadb
+docker compose -f srcs/docker-compose.yml logs redis
+docker compose -f srcs/docker-compose.yml logs adminer
+docker compose -f srcs/docker-compose.yml logs ftp
+docker compose -f srcs/docker-compose.yml logs static-site
+
+
+MARIADB:
+docker compose -f srcs/docker-compose.yml ps
+
+docker exec mariadb sh -c 'mariadb -uroot -p"$(cat /run/secrets/db_root_password)" -e "SHOW DATABASES;"'
+
+docker exec mariadb sh -c 'mariadb -uroot -p"$(cat /run/secrets/db_root_password)" -e "SHOW TABLES FROM wordpress;"'
+
+
+
+
+
+Redis:
+docker exec redis redis-cli INFO stats
+
+docker exec redis redis-cli DBSIZE
+
+docker exec redis redis-cli --scan | head -20
+
+
+To check FTP services run:
+
+- Check that the FTP container is running:
+docker compose -f srcs/docker-compose.yml ps ftp
+
+- Check the FTP service logs:
+docker compose -f srcs/docker-compose.yml logs --tail=30 ftp
+
+- Connect to the FTP server:
+filezilla
+
+Protocol: FTP — File Transfer Protocol
+Host: 127.0.0.1
+Port: 21
+Encryption: Only use plain FTP (insecure)
+Logon Type: Normal
+User: ftpuser
+Password: from ftp_password.txt
+
+- Check file:
+docker exec wordpress ls -l /var/www/html/ftp-test.txt
+
+
+
+
+
+To check Backup services run:
+
+- Create a backup:
+docker compose -f srcs/docker-compose.yml run --rm backup
+
+- Remove containers and data:
+make fclean
+
+- Start the project again:
+make
+
+- Restore the database:
+sudo sh -c 'docker exec -i mariadb sh -c '\''mariadb -u"$MYSQL_USER" -p"$(cat /run/secrets/db_password)" "$MYSQL_DATABASE"'\'' < /home/oshtohri/data/backups/wordpress_your_backup.sql'
+
+- Verify the restoration:
+docker exec mariadb sh -c 'mariadb -u"$MYSQL_USER" -p"$(cat /run/secrets/db_password)" "$MYSQL_DATABASE" -N -e "SELECT ID, post_title, post_status FROM wp_posts WHERE post_content LIKE '\''%Test_backup_post%'\'';"'
+
